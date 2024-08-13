@@ -22,7 +22,7 @@
 #########################################################################################################
 is_debug = False
 if is_debug:
-    ''' 
+    '''
         Install pydevd:
 
         1. sudo pip install pydevd
@@ -54,7 +54,7 @@ from keystone import *
 import idc
 import idaapi
 import six
-
+import ida_ida
 ################################ IDA 6/7 Compatibility import ###########################################
 if idaapi.IDA_SDK_VERSION >= 700:
     import ida_search
@@ -261,6 +261,71 @@ def get_name_value(_from, name):
     return (typ, value)
 
 
+def get_hardware_mode_from_ida90_pro():
+     # only for ida pro 9.0
+     (arch,mode ) = (None,None)
+     cpuname = idc.get_processor_name().lower()
+     is_be = ida_ida.inf_is_be()
+
+     if cpuname == "metapc":
+         arch = KS_ARCH_X86
+         if ida_ida.inf_is_64bit():
+             mode = KS_MODE_64
+         elif ida_ida.inf_is_32bit_exactly():
+             mode = KS_MODE_32
+         else:
+             mode = KS_MODE_16
+     elif cpuname.startswith("arm"):
+         # ARM or ARM64
+         if ida_ida.inf_is_64bit():
+             arch = KS_ARCH_ARM64
+             if is_be:
+                 mode = KS_MODE_BIG_ENDIAN
+             else:
+                 mode = KS_MODE_LITTLE_ENDIAN
+         else:
+             arch = KS_ARCH_ARM
+             # either big-endian or little-endian
+             if is_be:
+                 mode = KS_MODE_ARM | KS_MODE_BIG_ENDIAN
+             else:
+                 mode = KS_MODE_ARM | KS_MODE_LITTLE_ENDIAN
+     elif cpuname.startswith("sparc"):
+         arch = KS_ARCH_SPARC
+         if ida_ida.inf_is_64bit():
+             mode = KS_MODE_SPARC64
+         else:
+             mode = KS_MODE_SPARC32
+         if is_be:
+             mode |= KS_MODE_BIG_ENDIAN
+         else:
+             mode |= KS_MODE_LITTLE_ENDIAN
+     elif cpuname.startswith("ppc"):
+         arch = KS_ARCH_PPC
+         if ida_ida.inf_is_64bit():
+             mode = KS_MODE_PPC64
+         else:
+             mode = KS_MODE_PPC32
+         if cpuname == "ppc":
+             # do not support Little Endian mode for PPC
+             mode += KS_MODE_BIG_ENDIAN
+     elif cpuname.startswith("mips"):
+         arch = KS_ARCH_MIPS
+         if ida_ida.inf_is_64bit():
+             mode = KS_MODE_MIPS64
+         else:
+             mode = KS_MODE_MIPS32
+         if is_be:
+             mode |= KS_MODE_BIG_ENDIAN
+         else:
+             mode |= KS_MODE_LITTLE_ENDIAN
+     elif cpuname.startswith("systemz") or cpuname.startswith("s390x"):
+         arch = KS_ARCH_SYSTEMZ
+         mode = KS_MODE_BIG_ENDIAN
+
+     return (arch, mode)
+
+
 ## Main Keypatch class
 class Keypatch_Asm:
     # supported architectures
@@ -305,17 +370,25 @@ class Keypatch_Asm:
         # IDA uses Intel syntax by default
         self.syntax = KS_OPT_SYNTAX_INTEL
 
+
+
+
+
     # return Keystone arch & mode (with endianess included)
     @staticmethod
     def get_hardware_mode():
         (arch, mode) = (None, None)
 
         # heuristically detect hardware setup
-        info = idaapi.get_inf_structure()
-        
+        try:
+            info = idaapi.get_inf_structure()
+        except:
+            # Only from  ida pro 9.0 removed get_inf_sttructure
+            return get_hardware_mode_from_ida90_pro()
         try:
             cpuname = info.procname.lower()
         except:
+            # use default for ida pro 9.0
             cpuname = info.procName.lower()
 
         try:
@@ -325,7 +398,7 @@ class Keypatch_Asm:
             # older IDA versions
             is_be = idaapi.cvar.inf.mf
         # print("Keypatch BIG_ENDIAN = %s" %is_be)
-        
+
         if cpuname == "metapc":
             arch = KS_ARCH_X86
             if info.is_64bit():
@@ -717,7 +790,7 @@ class Keypatch_Asm:
 
                 # *** PPC
                 # stw     r5, 0x120+var_108(r1)
-                
+
                 if self.arch == KS_ARCH_ARM and mode == KS_MODE_THUMB:
                     assembly = assembly.replace('movt.w', 'movt')
 
@@ -1538,16 +1611,27 @@ try:
             return 1
 
         @classmethod
+        def get_cxt_type(self,ctx):
+            try:
+                return ctx.form_type
+            except:
+                return ctx.widget_type
+
+        @classmethod
         def update(self, ctx):
             try:
-                if ctx.form_type == idaapi.BWN_DISASM:
+                # 这里需要修改为widget_type  在idapro 9.0开始不使用了。
+                form_type = self.get_cxt_type(ctx)
+                if form_type == idaapi.BWN_DISASM:
                     return idaapi.AST_ENABLE_FOR_FORM
                 else:
                     return idaapi.AST_DISABLE_FOR_FORM
             except Exception as e:
                 # Add exception for main menu on >= IDA 7.0
                 return idaapi.AST_ENABLE_ALWAYS
-            
+                # maybe IDA 9.0
+                #
+
     # context menu for Patcher
     class Kp_MC_Patcher(Kp_Menu_Context):
         def activate(self, ctx):
@@ -1868,7 +1952,7 @@ class Keypatch_Plugin_t(idaapi.plugin_t):
         if self.kp_asm.arch is None:
             warning("ERROR: Keypatch cannot handle this architecture (unsupported by Keystone), quit!")
             return
-               
+
         selection, addr_begin, addr_end = read_range_selection()
         if not selection:
             warning("ERROR: Keypatch requires a range to be selected for fill in, try again")
